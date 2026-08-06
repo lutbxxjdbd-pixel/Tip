@@ -1,0 +1,616 @@
+-- ============================================
+-- AUTO_FARM_BLOCK_LOOT.LUA
+-- TỰ ĐỘNG FARM BLOCK + NHẶT LOOT + TRANG BỊ
+-- TƯƠNG THÍCH: KRNL, SYN X, FLUXUS, DELTA
+-- ============================================
+
+-- // FLAGS
+getgenv().AUTO_FARM_ENABLED = true
+getgenv().AUTO_EQUIP_BEST = true
+getgenv().AUTO_LOOT = true
+getgenv().LOOT_RADIUS = 50
+getgenv().FARM_RADIUS = 100
+getgenv().FARM_DELAY = 0.05
+getgenv().AUTO_SELL = false
+getgenv().SELL_WHEN_FULL = true
+getgenv().INVENTORY_LIMIT = 100
+
+-- // SERVICES
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local LocalPlayer = Players.LocalPlayer
+
+-- // VARIABLES
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:WaitForChild("Humanoid")
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+local Camera = Workspace.CurrentCamera
+
+-- ============================================
+-- BLOCK DETECTION (NHIỀU GAME KHÁC NHAU)
+-- ============================================
+local BlockPatterns = {
+    -- COMMON BLOCK NAMES
+    "Block", "block", "Ore", "ore", "Tree", "tree", "Rock", "rock",
+    "Node", "node", "Crystal", "crystal", "Mine", "mine", "Resource",
+    "Wood", "wood", "Stone", "stone", "Iron", "iron", "Gold", "gold",
+    "Diamond", "diamond", "Coal", "coal", "Copper", "copper",
+    "Gem", "gem", "Chest", "chest", "Crate", "crate", "Box", "box",
+    "Flower", "flower", "Bush", "bush", "Mushroom", "mushroom",
+    "Fish", "fish", "Monster", "Enemy", "Mob", "mob",
+    "Coin", "coin", "Money", "money", "Cash", "cash",
+    
+    -- SIMULATOR SPECIFIC
+    "Dirt", "Grass", "Sand", "Gravel", "Obsidian",
+    "Emerald", "Ruby", "Sapphire", "Amethyst", "Topaz",
+    "Mythic", "Legendary", "Epic", "Rare", "Common",
+    
+    -- ANIME GAMES
+    "Quest", "Boss", "Minion", "Spawn",
+    
+    -- PET SIMULATOR
+    "Egg", "Huge", "Titanic", "Exclusive",
+    "CoinPile", "DiamondPile", "Golden",
+    
+    -- MINING SIMULATOR
+    "Layer1", "Layer2", "Layer3", "Layer4", "Layer5",
+    "Depth1", "Depth2", "Depth3", "Depth4", "Depth5"
+}
+
+-- ============================================
+-- LOOT DETECTION
+-- ============================================
+local LootPatterns = {
+    "Coin", "coin", "Money", "money", "Cash", "cash", "Gold", "gold",
+    "Diamond", "diamond", "Gem", "gem", "Crystal", "crystal",
+    "Loot", "loot", "Drop", "drop", "Item", "item",
+    "Sword", "sword", "Pickaxe", "pickaxe", "Axe", "axe",
+    "Weapon", "weapon", "Tool", "tool", "Gun", "gun",
+    "Armor", "armor", "Helmet", "helmet", "Shield", "shield",
+    "Potion", "potion", "Food", "food", "Drink", "drink",
+    "Backpack", "bag", "Pouch", "pouch", "Satchel",
+    "Pet", "pet", "Egg", "egg", "Mount", "mount",
+    "Scroll", "scroll", "Book", "book", "Rune", "rune",
+    "Key", "key", "Fragment", "fragment", "Shard", "shard",
+    "Token", "token", "Ticket", "ticket", "Voucher", "voucher",
+    "Material", "material", "Resource", "resource", "Ingredient",
+    "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic",
+    "Divine", "Godly", "Exotic", "Exclusive", "Limited"
+}
+
+-- ============================================
+-- EQUIPMENT TIER LIST (CAO NHẤT = TỐT NHẤT)
+-- ============================================
+local TierPriority = {
+    ["Godly"] = 100,
+    ["Divine"] = 95,
+    ["Mythic"] = 90,
+    ["Exclusive"] = 85,
+    ["Legendary"] = 80,
+    ["Exotic"] = 75,
+    ["Titanic"] = 70,
+    ["Huge"] = 65,
+    ["Epic"] = 60,
+    ["Rare"] = 40,
+    ["Uncommon"] = 20,
+    ["Common"] = 10,
+    ["Basic"] = 5,
+    ["Starter"] = 1,
+    ["Default"] = 0
+}
+
+-- ============================================
+-- CACHE
+-- ============================================
+local BlockCache = {}
+local LootCache = {}
+local LastFarmTime = 0
+local Inventory = {}
+
+-- ============================================
+-- UTILITY: KIỂM TRA OBJECT CÓ PHẢI BLOCK
+-- ============================================
+local function IsBlock(obj)
+    if not obj or not obj:IsA("BasePart") then return false end
+    if obj.Parent and obj.Parent:IsA("Model") then
+        obj = obj.Parent
+    end
+    
+    local name = obj.Name
+    local className = obj.ClassName
+    
+    -- Kiểm tra tên
+    for _, pattern in ipairs(BlockPatterns) do
+        if string.find(string.lower(name), string.lower(pattern)) then
+            return true
+        end
+    end
+    
+    -- Kiểm tra attribute
+    local health = obj:GetAttribute("Health")
+    local maxHealth = obj:GetAttribute("MaxHealth")
+    local blockType = obj:GetAttribute("BlockType")
+    local resourceType = obj:GetAttribute("ResourceType")
+    
+    if health or maxHealth or blockType or resourceType then
+        return true
+    end
+    
+    -- Kiểm tra CollectionService tags
+    local tags = CollectionService:GetTags(obj)
+    for _, tag in ipairs(tags) do
+        for _, pattern in ipairs(BlockPatterns) do
+            if string.find(string.lower(tag), string.lower(pattern)) then
+                return true
+            end
+        end
+    end
+    
+    -- Kiểm tra proximity prompt (cho tree/rock)
+    local prompt = obj:FindFirstChildOfClass("ProximityPrompt")
+    if prompt then
+        local promptText = prompt.ActionText or prompt.ObjectText or ""
+        if string.find(string.lower(promptText), "mine") or
+           string.find(string.lower(promptText), "chop") or
+           string.find(string.lower(promptText), "collect") or
+           string.find(string.lower(promptText), "harvest") or
+           string.find(string.lower(promptText), "farm") or
+           string.find(string.lower(promptText), "pick") then
+            return true
+        end
+    end
+    
+    -- Kiểm tra click detector
+    local clickDetector = obj:FindFirstChildOfClass("ClickDetector")
+    if clickDetector then
+        return true
+    end
+    
+    return false
+end
+
+-- ============================================
+-- UTILITY: KIỂM TRA OBJECT CÓ PHẢI LOOT
+-- ============================================
+local function IsLoot(obj)
+    if not obj or not obj:IsA("BasePart") then return false end
+    if obj.Parent and obj.Parent:IsA("Model") then
+        obj = obj.Parent
+    end
+    
+    local name = obj.Name
+    
+    for _, pattern in ipairs(LootPatterns) do
+        if string.find(string.lower(name), string.lower(pattern)) then
+            return true
+        end
+    end
+    
+    -- Kiểm tra billboard GUI (hiển thị tên item)
+    local billboard = obj:FindFirstChildOfClass("BillboardGui")
+    if billboard then
+        return true
+    end
+    
+    -- Kiểm tra sparkles/particles (hiệu ứng loot)
+    local sparkles = obj:FindFirstChildOfClass("Sparkles")
+    local particles = obj:FindFirstChildOfClass("ParticleEmitter")
+    if sparkles or particles then
+        return true
+    end
+    
+    -- Kiểm tra highlight
+    local highlight = obj:FindFirstChildOfClass("Highlight")
+    if highlight then
+        local fillColor = highlight.FillColor
+        if fillColor and (
+            fillColor == Color3.fromRGB(255, 215, 0) or  -- Gold
+            fillColor == Color3.fromRGB(0, 255, 255) or  -- Cyan (Diamond)
+            fillColor == Color3.fromRGB(255, 0, 255) or  -- Magenta (Mythic)
+            fillColor == Color3.fromRGB(255, 128, 0)     -- Orange (Legendary)
+        ) then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- ============================================
+-- UTILITY: LẤY TIER CỦA ITEM
+-- ============================================
+local function GetItemTier(item)
+    local name = item.Name
+    if item.Parent and item.Parent:IsA("Model") then
+        name = item.Parent.Name
+    end
+    
+    for tier, priority in pairs(TierPriority) do
+        if string.find(string.lower(name), string.lower(tier)) then
+            return tier, priority
+        end
+    end
+    
+    return "Common", 10
+end
+
+-- ============================================
+-- UTILITY: LẤY KHOẢNG CÁCH
+-- ============================================
+local function GetDistance(pos1, pos2)
+    return (pos1 - pos2).Magnitude
+end
+
+-- ============================================
+-- SCAN BLOCKS TRONG PHẠM VI
+-- ============================================
+local function ScanBlocks()
+    local blocks = {}
+    local rootPos = HumanoidRootPart.Position
+    
+    -- Quét tất cả object trong Workspace
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if not obj:IsA("BasePart") then continue end
+        
+        local pos = obj.Position
+        local distance = GetDistance(rootPos, pos)
+        
+        if distance <= getgenv().FARM_RADIUS then
+            if IsBlock(obj) then
+                table.insert(blocks, {
+                    Object = obj,
+                    Position = pos,
+                    Distance = distance
+                })
+            end
+        end
+    end
+    
+    -- Sắp xếp theo khoảng cách
+    table.sort(blocks, function(a, b)
+        return a.Distance < b.Distance
+    end)
+    
+    return blocks
+end
+
+-- ============================================
+-- SCAN LOOT TRONG PHẠM VI
+-- ============================================
+local function ScanLoot()
+    local loots = {}
+    local rootPos = HumanoidRootPart.Position
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if not obj:IsA("BasePart") then continue end
+        
+        local pos = obj.Position
+        local distance = GetDistance(rootPos, pos)
+        
+        if distance <= getgenv().LOOT_RADIUS then
+            if IsLoot(obj) then
+                local tier, priority = GetItemTier(obj)
+                table.insert(loots, {
+                    Object = obj,
+                    Position = pos,
+                    Distance = distance,
+                    Tier = tier,
+                    Priority = priority
+                })
+            end
+        end
+    end
+    
+    -- Sắp xếp: gần nhất + tier cao nhất
+    table.sort(loots, function(a, b)
+        local scoreA = a.Priority * 10 - a.Distance
+        local scoreB = b.Priority * 10 - b.Distance
+        return scoreA > scoreB
+    end)
+    
+    return loots
+end
+
+-- ============================================
+-- FARM BLOCK (CLICK/TOUCH)
+-- ============================================
+local function FarmBlock(block)
+    if not block or not block.Object then return false end
+    
+    local obj = block.Object
+    
+    -- Phương pháp 1: Fire ClickDetector
+    local clickDetector = obj:FindFirstChildOfClass("ClickDetector")
+    if clickDetector then
+        fireclickdetector(clickDetector)
+        return true
+    end
+    
+    -- Phương pháp 2: Fire ProximityPrompt
+    local prompt = obj:FindFirstChildOfClass("ProximityPrompt")
+    if prompt then
+        fireproximityprompt(prompt)
+        return true
+    end
+    
+    -- Phương pháp 3: Fire TouchInterest
+    local touchInterest = obj:FindFirstChildOfClass("TouchTransmitter")
+    if touchInterest then
+        firetouchinterest(obj, HumanoidRootPart, 0)
+        firetouchinterest(obj, HumanoidRootPart, 1)
+        return true
+    end
+    
+    -- Phương pháp 4: Remote Event (phổ biến nhất)
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes") or 
+                    ReplicatedStorage:FindFirstChild("Events") or
+                    ReplicatedStorage
+                    
+    local mineRemote = remotes:FindFirstChild("Mine") or
+                       remotes:FindFirstChild("Harvest") or
+                       remotes:FindFirstChild("Collect") or
+                       remotes:FindFirstChild("Farm") or
+                       remotes:FindFirstChild("Hit") or
+                       remotes:FindFirstChild("Damage") or
+                       remotes:FindFirstChild("Click") or
+                       remotes:FindFirstChild("Interact")
+    
+    if mineRemote and mineRemote:IsA("RemoteEvent") then
+        pcall(function()
+            mineRemote:FireServer(obj)
+        end)
+        return true
+    end
+    
+    -- Phương pháp 5: Tool activation
+    local tool = Character:FindFirstChildOfClass("Tool")
+    if tool then
+        local toolRemote = tool:FindFirstChild("RemoteEvent") or
+                          tool:FindFirstChild("Activate") or
+                          tool:FindFirstChild("Use")
+        if toolRemote and toolRemote:IsA("RemoteEvent") then
+            pcall(function()
+                toolRemote:FireServer(obj)
+            end)
+            return true
+        end
+        
+        -- Activate tool
+        pcall(function()
+            tool:Activate()
+        end)
+        wait(0.05)
+        pcall(function()
+            tool:Deactivate()
+        end)
+        return true
+    end
+    
+    return false
+end
+
+-- ============================================
+-- NHẶT LOOT
+-- ============================================
+local function CollectLoot(loot)
+    if not loot or not loot.Object then return false end
+    
+    local obj = loot.Object
+    
+    -- Phương pháp 1: Touch (di chuyển đến loot)
+    local oldPos = HumanoidRootPart.CFrame
+    HumanoidRootPart.CFrame = CFrame.new(obj.Position)
+    wait(0.1)
+    
+    -- Phương pháp 2: Fire Remote
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes") or
+                    ReplicatedStorage:FindFirstChild("Events") or
+                    ReplicatedStorage
+                    
+    local collectRemote = remotes:FindFirstChild("Collect") or
+                         remotes:FindFirstChild("Pickup") or
+                         remotes:FindFirstChild("Loot") or
+                         remotes:FindFirstChild("Grab") or
+                         remotes:FindFirstChild("Take") or
+                         remotes:FindFirstChild("GetItem")
+    
+    if collectRemote and collectRemote:IsA("RemoteEvent") then
+        pcall(function()
+            collectRemote:FireServer(obj)
+        end)
+    end
+    
+    -- Phương pháp 3: Click Detector
+    local clickDetector = obj:FindFirstChildOfClass("ClickDetector")
+    if clickDetector then
+        fireclickdetector(clickDetector)
+    end
+    
+    wait(0.05)
+    HumanoidRootPart.CFrame = oldPos
+    return true
+end
+
+-- ============================================
+-- AUTO EQUIP BEST ITEMS
+-- ============================================
+local function AutoEquipBest()
+    if not getgenv().AUTO_EQUIP_BEST then return end
+    
+    local backpack = LocalPlayer:FindFirstChild("Backpack") or
+                    LocalPlayer:FindFirstChild("Inventory") or
+                    Character:FindFirstChild("Backpack") or
+                    Character:FindFirstChild("Inventory")
+    
+    if not backpack then return end
+    
+    local items = {}
+    for _, item in ipairs(backpack:GetChildren()) do
+        local tier, priority = GetItemTier(item)
+        table.insert(items, {
+            Item = item,
+            Tier = tier,
+            Priority = priority
+        })
+    end
+    
+    -- Sắp xếp theo tier
+    table.sort(items, function(a, b)
+        return a.Priority > b.Priority
+    end)
+    
+    -- Equip item tốt nhất
+    if #items > 0 then
+        local bestItem = items[1].Item
+        if bestItem:IsA("Tool") then
+            pcall(function()
+                Humanoid:EquipTool(bestItem)
+            end)
+        end
+    end
+end
+
+-- ============================================
+-- AUTO SELL (BÁN ITEM THỪA)
+-- ============================================
+local function AutoSell()
+    if not getgenv().AUTO_SELL then return end
+    
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes") or
+                    ReplicatedStorage:FindFirstChild("Events") or
+                    ReplicatedStorage
+                    
+    local sellRemote = remotes:FindFirstChild("Sell") or
+                      remotes:FindFirstChild("SellAll") or
+                      remotes:FindFirstChild("Trade") or
+                      remotes:FindFirstChild("Shop")
+    
+    if sellRemote and sellRemote:IsA("RemoteEvent") then
+        pcall(function()
+            sellRemote:FireServer()
+        end)
+    end
+    
+    -- Tìm NPC bán đồ
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") or obj:IsA("BasePart") then
+            local name = obj.Name
+            if string.find(string.lower(name), "shop") or
+               string.find(string.lower(name), "sell") or
+               string.find(string.lower(name), "merchant") or
+               string.find(string.lower(name), "vendor") or
+               string.find(string.lower(name), "trader") or
+               string.find(string.lower(name), "npc") then
+                
+                local clickDetector = obj:FindFirstChildOfClass("ClickDetector")
+                if clickDetector then
+                    fireclickdetector(clickDetector)
+                    return
+                end
+            end
+        end
+    end
+end
+
+-- ============================================
+-- DI CHUYỂN ĐẾN VỊ TRÍ (TP)
+-- ============================================
+local function MoveTo(pos)
+    local tweenInfo = TweenInfo.new(
+        getgenv().FARM_DELAY,
+        Enum.EasingStyle.Linear,
+        Enum.EasingDirection.Out
+    )
+    
+    local goal = {CFrame = CFrame.new(pos)}
+    local tween = TweenService:Create(HumanoidRootPart, tweenInfo, goal)
+    tween:Play()
+    tween.Completed:Wait()
+end
+
+-- ============================================
+-- MAIN FARM LOOP
+-- ============================================
+local function MainFarmLoop()
+    while getgenv().AUTO_FARM_ENABLED do
+        if not LocalPlayer or not Character or not HumanoidRootPart then
+            Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+            if not Character then wait(1); continue end
+            Humanoid = Character:WaitForChild("Humanoid")
+            HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+        end
+        
+        if Humanoid.Health <= 0 then
+            wait(1)
+            continue
+        end
+        
+        -- BƯỚC 1: SCAN BLOCKS
+        local blocks = ScanBlocks()
+        
+        -- BƯỚC 2: FARM BLOCK GẦN NHẤT
+        if #blocks > 0 then
+            local targetBlock = blocks[1]
+            
+            -- Di chuyển đến block nếu quá xa
+            if targetBlock.Distance > 10 then
+                MoveTo(targetBlock.Position)
+            end
+            
+            -- Farm block
+            FarmBlock(targetBlock)
+            
+            -- Đợi block bị phá
+            wait(getgenv().FARM_DELAY * 2)
+            
+        else
+            -- Không có block, đi tìm
+            local randomX = math.random(-getgenv().FARM_RADIUS, getgenv().FARM_RADIUS)
+            local randomZ = math.random(-getgenv().FARM_RADIUS, getgenv().FARM_RADIUS)
+            local searchPos = HumanoidRootPart.Position + Vector3.new(randomX, 0, randomZ)
+            MoveTo(searchPos)
+            wait(0.5)
+        end
+        
+        -- BƯỚC 3: SCAN LOOT
+        if getgenv().AUTO_LOOT then
+            local loots = ScanLoot()
+            
+            for _, loot in ipairs(loots) do
+                if loot.Distance <= getgenv().LOOT_RADIUS then
+                    CollectLoot(loot)
+                    wait(0.01)
+                end
+            end
+        end
+        
+        -- BƯỚC 4: AUTO EQUIP
+        if getgenv().AUTO_EQUIP_BEST then
+            AutoEquipBest()
+        end
+        
+        -- BƯỚC 5: AUTO SELL
+        if getgenv().AUTO_SELL then
+            AutoSell()
+        end
+        
+        wait(getgenv().FARM_DELAY)
+    end
+end
+
+-- ============================================
+-- CHARACTER RESPAWN HANDLER
+-- ============================================
+LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+    Character = newCharacter
+    Humanoid = Character:WaitForChild("Humanoid")
+    HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+end)
+
+-- ============
