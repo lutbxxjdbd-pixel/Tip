@@ -1,0 +1,151 @@
+-- // CONFIG
+getgenv().FARM = true
+getgenv().LOOT = true
+getgenv().EQUIP = true
+getgenv().SELL = false
+getgenv().RADIUS = 50
+
+-- // SERVICES
+local p=game.Players.LocalPlayer
+local c=p.Character or p.CharacterAdded:Wait()
+local h=c.Humanoid
+local r=c.HumanoidRootPart
+local ws=game:GetService("Workspace")
+local rs=game:GetService("ReplicatedStorage")
+
+-- // BLOCK PATTERNS
+local bp={"Block","Ore","Tree","Rock","Node","Crystal","Mine","Resource","Wood","Stone","Iron","Gold","Diamond","Coal","Copper","Gem","Chest","Crate","Box","Coin","Money","Cash","Dirt","Grass","Sand","Gravel","Obsidian","Emerald","Ruby","Sapphire","Amethyst","Topaz","Mythic","Legendary","Epic","Rare","Common","Egg","Huge","Titanic","Boss","Minion","Flower","Bush","Mushroom"}
+
+-- // LOOT PATTERNS
+local lp={"Coin","Money","Cash","Gold","Diamond","Gem","Crystal","Loot","Drop","Item","Sword","Pickaxe","Axe","Weapon","Tool","Gun","Armor","Helmet","Shield","Potion","Food","Backpack","Pet","Egg","Mount","Scroll","Book","Rune","Key","Fragment","Shard","Token","Ticket","Material","Resource","Common","Uncommon","Rare","Epic","Legendary","Mythic","Divine","Godly"}
+
+-- // TIER
+local tier={["Godly"]=100,["Divine"]=95,["Mythic"]=90,["Exclusive"]=85,["Legendary"]=80,["Titanic"]=70,["Huge"]=65,["Epic"]=60,["Rare"]=40,["Uncommon"]=20,["Common"]=10,["Basic"]=5}
+
+-- // CHECK IF OBJECT MATCHES PATTERNS
+local function match(obj,patterns)
+    local n=string.lower(obj.Name)
+    for _,v in ipairs(patterns)do
+        if n:find(string.lower(v))then return true end
+    end
+    return false
+end
+
+-- // FIND NEAREST
+local function nearest(patterns,rad)
+    local best=nil
+    local bestDist=rad
+    for _,v in ipairs(ws:GetDescendants())do
+        if v:IsA("BasePart")then
+            local d=(v.Position-r.Position).Magnitude
+            if d<bestDist and match(v,patterns)then
+                best=v
+                bestDist=d
+            end
+        end
+    end
+    return best
+end
+
+-- // GET ITEM TIER
+local function getTier(obj)
+    local n=string.lower(obj.Name)
+    for k,v in pairs(tier)do
+        if n:find(string.lower(k))then return v end
+    end
+    return 10
+end
+
+-- // CLICK OBJECT (UNIVERSAL)
+local function click(obj)
+    pcall(function()
+        local cd=obj:FindFirstChildOfClass("ClickDetector")
+        if cd then fireclickdetector(cd)return end
+        local pp=obj:FindFirstChildOfClass("ProximityPrompt")
+        if pp then fireproximityprompt(pp)return end
+        local rem=rs:FindFirstChild("Remotes")or rs:FindFirstChild("Events")or rs
+        local ev=rem:FindFirstChild("Mine")or rem:FindFirstChild("Harvest")or rem:FindFirstChild("Collect")or rem:FindFirstChild("Farm")or rem:FindFirstChild("Hit")or rem:FindFirstChild("Damage")or rem:FindFirstChild("Click")
+        if ev and ev:IsA("RemoteEvent")then ev:FireServer(obj)return end
+        local t=c:FindFirstChildOfClass("Tool")
+        if t then t:Activate()wait(0.05)t:Deactivate()end
+    end)
+end
+
+-- // COLLECT LOOT
+local function collect(obj)
+    local old=r.CFrame
+    r.CFrame=CFrame.new(obj.Position)
+    wait(0.05)
+    local rem=rs:FindFirstChild("Remotes")or rs:FindFirstChild("Events")or rs
+    local ev=rem:FindFirstChild("Collect")or rem:FindFirstChild("Pickup")or rem:FindFirstChild("Loot")or rem:FindFirstChild("Grab")or rem:FindFirstChild("Take")
+    if ev and ev:IsA("RemoteEvent")then ev:FireServer(obj)end
+    click(obj)
+    wait(0.02)
+    r.CFrame=old
+end
+
+-- // EQUIP BEST TOOL
+local function equipBest()
+    local bp=LocalPlayer:FindFirstChild("Backpack")or c:FindFirstChild("Backpack")
+    if not bp then return end
+    local best=nil
+    local bestTier=0
+    for _,v in ipairs(bp:GetChildren())do
+        if v:IsA("Tool")then
+            local t=getTier(v)
+            if t>bestTier then best=v;bestTier=t end
+        end
+    end
+    if best then pcall(function()h:EquipTool(best)end)end
+end
+
+-- // SELL
+local function sell()
+    local rem=rs:FindFirstChild("Remotes")or rs:FindFirstChild("Events")or rs
+    local ev=rem:FindFirstChild("Sell")or rem:FindFirstChild("SellAll")or rem:FindFirstChild("Trade")
+    if ev and ev:IsA("RemoteEvent")then ev:FireServer()return end
+    local npc=nearest({"Shop","Sell","Merchant","Vendor","Trader"},100)
+    if npc then click(npc)end
+end
+
+-- // MOVE TO
+local function moveTo(pos)
+    r.CFrame=CFrame.new(pos)
+    wait(0.05)
+end
+
+-- // RESPAWN HANDLER
+p.CharacterAdded:Connect(function(nc)c=nc;h=c:WaitForChild("Humanoid");r=c:WaitForChild("HumanoidRootPart")end)
+
+-- // MAIN LOOP
+print("AUTO FARM READY | F1:Farm F2:Loot F3:Equip F4:Sell")
+while wait(0.05)do
+    if not getgenv().FARM then continue end
+    if h.Health<=0 then wait(1)continue end
+    
+    local block=nearest(bp,getgenv().RADIUS)
+    if block then
+        if(block.Position-r.Position).Magnitude>10 then moveTo(block.Position)end
+        click(block)
+    end
+    
+    if getgenv().LOOT then
+        for _,v in ipairs(ws:GetDescendants())do
+            if v:IsA("BasePart")and(v.Position-r.Position).Magnitude<getgenv().RADIUS and match(v,lp)then
+                collect(v)
+            end
+        end
+    end
+    
+    if getgenv().EQUIP then equipBest()end
+    if getgenv().SELL then sell()end
+end
+
+-- // KEYBINDS
+game:GetService("UserInputService").InputBegan:Connect(function(i,g)
+    if g then return end
+    if i.KeyCode==Enum.KeyCode.F1 then getgenv().FARM=not getgenv().FARM print("FARM:",getgenv().FARM)end
+    if i.KeyCode==Enum.KeyCode.F2 then getgenv().LOOT=not getgenv().LOOT print("LOOT:",getgenv().LOOT)end
+    if i.KeyCode==Enum.KeyCode.F3 then getgenv().EQUIP=not getgenv().EQUIP print("EQUIP:",getgenv().EQUIP)end
+    if i.KeyCode==Enum.KeyCode.F4 then getgenv().SELL=not getgenv().SELL print("SELL:",getgenv().SELL)end
+end)
