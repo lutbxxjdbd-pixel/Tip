@@ -1,0 +1,285 @@
+-- ============================================
+-- AUTO FARM BLOCK + LOOT - TỪ ĐỒNG LÊN CẤP
+-- TỰ ĐỘNG FARM BLOCK YẾU -> MẠNH THEO LEVEL
+-- DELTA EXECUTOR READY
+-- ============================================
+getgenv().FARM = true
+getgenv().LOOT = true
+getgenv().EQUIP = true
+getgenv().UPGRADE = true
+getgenv().SELL = false
+getgenv().RADIUS = 50
+
+local p = game.Players.LocalPlayer
+local c = p.Character or p.CharacterAdded:Wait()
+local h = c:WaitForChild("Humanoid")
+local r = c:WaitForChild("HumanoidRootPart")
+
+-- // CẤP ĐỘ BLOCK (TỪ THẤP -> CAO)
+local blockTiers = {
+    {name="Dirt", power=1, patterns={"Dirt","Grass","Sand","Gravel","Mud"}},
+    {name="Stone", power=2, patterns={"Stone","Rock","Boulder","Pebble"}},
+    {name="Copper", power=3, patterns={"Copper","Bronze","Tin"}},
+    {name="Iron", power=4, patterns={"Iron","Steel","Metal"}},
+    {name="Coal", power=5, patterns={"Coal","Carbon","Charcoal"}},
+    {name="Gold", power=6, patterns={"Gold","Golden","Gilded"}},
+    {name="Crystal", power=7, patterns={"Crystal","Quartz","Gem","Amethyst"}},
+    {name="Diamond", power=8, patterns={"Diamond","Sapphire","Ruby","Emerald"}},
+    {name="Obsidian", power=9, patterns={"Obsidian","Magma","Lava","Volcanic"}},
+    {name="Mythic", power=10, patterns={"Mythic","Legendary","Divine","Godly","Titanic"}},
+}
+
+local lootPatterns = {"Coin","Money","Cash","Gold","Diamond","Gem","Crystal","Loot","Drop","Item","Sword","Pickaxe","Axe","Weapon","Tool","Gun","Armor","Helmet","Shield","Potion","Food","Backpack","Pet","Egg","Mount","Scroll","Book","Rune","Key","Fragment","Shard","Token","Ticket","Material","Resource","Common","Uncommon","Rare","Epic","Legendary","Mythic","Divine","Godly"}
+
+-- // LẤY CẤP ĐỘ HIỆN TẠI TỪ TOOL ĐANG CẦM
+local function getCurrentPower()
+    local tool = c:FindFirstChildOfClass("Tool")
+    if tool then
+        local name = string.lower(tool.Name)
+        for i = #blockTiers, 1, -1 do
+            for _, pt in pairs(blockTiers[i].patterns) do
+                if string.find(name, string.lower(pt)) then
+                    return blockTiers[i].power
+                end
+            end
+        end
+    end
+    return 1 -- MẶC ĐỊNH ĐỒNG
+end
+
+-- // TÌM BLOCK PHÙ HỢP VỚI CẤP ĐỘ
+local function findBestBlock()
+    local power = getCurrentPower()
+    local best = nil
+    local bestDist = getgenv().RADIUS
+    
+    -- ƯU TIÊN BLOCK CÙNG CẤP, SAU ĐÓ THẤP HƠN, SAU ĐÓ CAO HƠN 1 CẤP
+    local priorityLevels = {}
+    table.insert(priorityLevels, power)      -- CÙNG CẤP
+    for i = power - 1, 1, -1 do
+        table.insert(priorityLevels, i)      -- THẤP HƠN
+    end
+    if power < #blockTiers then
+        table.insert(priorityLevels, power + 1) -- CAO HƠN 1 CẤP
+    end
+    
+    for _, targetPower in ipairs(priorityLevels) do
+        local tier = blockTiers[targetPower]
+        if tier then
+            for _, v in pairs(game:GetService("Workspace"):GetDescendants()) do
+                if v:IsA("BasePart") then
+                    local d = (v.Position - r.Position).Magnitude
+                    if d < bestDist then
+                        local name = string.lower(v.Name)
+                        for _, pt in pairs(tier.patterns) do
+                            if string.find(name, string.lower(pt)) then
+                                best = v
+                                bestDist = d
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if best then return best, targetPower end
+    end
+    
+    return nil, power
+end
+
+-- // CLICK
+local function click(obj)
+    pcall(function()
+        local cd = obj:FindFirstChildOfClass("ClickDetector")
+        if cd then fireclickdetector(cd) return end
+        local pp = obj:FindFirstChildOfClass("ProximityPrompt")
+        if pp then fireproximityprompt(pp) return end
+        local rs = game:GetService("ReplicatedStorage")
+        local rem = rs:FindFirstChild("Remotes") or rs:FindFirstChild("Events") or rs
+        local ev = rem:FindFirstChild("Mine") or rem:FindFirstChild("Harvest") or rem:FindFirstChild("Collect") or rem:FindFirstChild("Farm") or rem:FindFirstChild("Hit") or rem:FindFirstChild("Damage") or rem:FindFirstChild("Click")
+        if ev and ev:IsA("RemoteEvent") then ev:FireServer(obj) return end
+        local t = c:FindFirstChildOfClass("Tool")
+        if t then t:Activate() wait(0.05) t:Deactivate() end
+    end)
+end
+
+-- // MATCH LOOT
+local function matchLoot(obj)
+    local n = string.lower(obj.Name)
+    for _, v in pairs(lootPatterns) do
+        if string.find(n, string.lower(v)) then return true end
+    end
+    return false
+end
+
+-- // COLLECT LOOT
+local function collectLoot(obj)
+    pcall(function()
+        local old = r.CFrame
+        r.CFrame = CFrame.new(obj.Position)
+        wait(0.05)
+        local rs = game:GetService("ReplicatedStorage")
+        local rem = rs:FindFirstChild("Remotes") or rs:FindFirstChild("Events") or rs
+        local ev = rem:FindFirstChild("Collect") or rem:FindFirstChild("Pickup") or rem:FindFirstChild("Loot") or rem:FindFirstChild("Grab") or rem:FindFirstChild("Take")
+        if ev and ev:IsA("RemoteEvent") then ev:FireServer(obj) end
+        click(obj)
+        wait(0.02)
+        r.CFrame = old
+    end)
+end
+
+-- // EQUIP TOOL MẠNH NHẤT
+local function equipBestTool()
+    if not getgenv().EQUIP then return end
+    pcall(function()
+        local bp = p:FindFirstChild("Backpack") or c:FindFirstChild("Backpack")
+        if not bp then return end
+        local bestTool = nil
+        local bestPower = 0
+        for _, v in pairs(bp:GetChildren()) do
+            if v:IsA("Tool") then
+                local name = string.lower(v.Name)
+                for i = #blockTiers, 1, -1 do
+                    for _, pt in pairs(blockTiers[i].patterns) do
+                        if string.find(name, string.lower(pt)) and blockTiers[i].power > bestPower then
+                            bestTool = v
+                            bestPower = blockTiers[i].power
+                        end
+                    end
+                end
+            end
+        end
+        if bestTool then h:EquipTool(bestTool) end
+    end)
+end
+
+-- // NÂNG CẤP (TÌM NPC HOẶC SHOP)
+local function upgradeTool()
+    if not getgenv().UPGRADE then return end
+    pcall(function()
+        local rs = game:GetService("ReplicatedStorage")
+        local rem = rs:FindFirstChild("Remotes") or rs:FindFirstChild("Events") or rs
+        local ev = rem:FindFirstChild("Upgrade") or rem:FindFirstChild("Enchant") or rem:FindFirstChild("Forge") or rem:FindFirstChild("Craft") or rem:FindFirstChild("Smith")
+        if ev and ev:IsA("RemoteEvent") then
+            local tool = c:FindFirstChildOfClass("Tool")
+            if tool then ev:FireServer(tool) end
+            return
+        end
+        local npc = nil
+        for _, v in pairs(game:GetService("Workspace"):GetDescendants()) do
+            local n = string.lower(v.Name)
+            if string.find(n, "upgrade") or string.find(n, "enchant") or string.find(n, "forge") or string.find(n, "craft") or string.find(n, "smith") or string.find(n, "blacksmith") then
+                local cd = v:FindFirstChildOfClass("ClickDetector")
+                if cd then npc = v; break end
+            end
+        end
+        if npc then click(npc) end
+    end)
+end
+
+-- // SELL
+local function sellItems()
+    if not getgenv().SELL then return end
+    pcall(function()
+        local rs = game:GetService("ReplicatedStorage")
+        local rem = rs:FindFirstChild("Remotes") or rs:FindFirstChild("Events") or rs
+        local ev = rem:FindFirstChild("Sell") or rem:FindFirstChild("SellAll") or rem:FindFirstChild("Trade")
+        if ev and ev:IsA("RemoteEvent") then ev:FireServer() return end
+        for _, v in pairs(game:GetService("Workspace"):GetDescendants()) do
+            local n = string.lower(v.Name)
+            if string.find(n, "shop") or string.find(n, "sell") or string.find(n, "merchant") or string.find(n, "vendor") then
+                local cd = v:FindFirstChildOfClass("ClickDetector")
+                if cd then click(v); break end
+            end
+        end
+    end)
+end
+
+-- // MOVE
+local function moveTo(pos)
+    pcall(function()
+        r.CFrame = CFrame.new(pos)
+        wait(0.05)
+    end)
+end
+
+-- // RESPAWN
+p.CharacterAdded:Connect(function(nc)
+    c = nc
+    h = c:WaitForChild("Humanoid")
+    r = c:WaitForChild("HumanoidRootPart")
+    wait(0.5)
+    equipBestTool()
+end)
+
+-- // STARTUP
+equipBestTool()
+local startPower = getCurrentPower()
+print("===================================")
+print(" AUTO FARM - TU DONG LEN CAP")
+print(" CAP HIEN TAI: " .. (blockTiers[startPower] and blockTiers[startPower].name or "DONG"))
+print(" F1:Farm F2:Loot F3:Equip F4:Upgrade F5:Sell")
+print("===================================")
+
+-- // MAIN LOOP
+while wait(0.1) do
+    if not getgenv().FARM then continue end
+    if h.Health <= 0 then wait(1) continue end
+    
+    -- FARM BLOCK THEO CẤP
+    pcall(function()
+        local block, blockPower = findBestBlock()
+        if block then
+            local dist = (block.Position - r.Position).Magnitude
+            if dist > 10 then
+                moveTo(block.Position)
+            end
+            click(block)
+            
+            -- HIỂN THỊ CẤP ĐỘ ĐANG FARM
+            local currentPower = getCurrentPower()
+            if currentPower ~= startPower then
+                startPower = currentPower
+                local tierName = blockTiers[currentPower] and blockTiers[currentPower].name or "UNKNOWN"
+                print("DA LEN CAP: " .. tierName .. " (Power: " .. currentPower .. ")")
+                equipBestTool()
+            end
+        else
+            -- KHÔNG TÌM THẤY BLOCK -> ĐI TÌM
+            local rx = math.random(-getgenv().RADIUS, getgenv().RADIUS)
+            local rz = math.random(-getgenv().RADIUS, getgenv().RADIUS)
+            moveTo(r.Position + Vector3.new(rx, 0, rz))
+        end
+    end)
+    
+    -- LOOT
+    if getgenv().LOOT then
+        pcall(function()
+            for _, v in pairs(game:GetService("Workspace"):GetDescendants()) do
+                if v:IsA("BasePart") and (v.Position - r.Position).Magnitude < getgenv().RADIUS and matchLoot(v) then
+                    collectLoot(v)
+                end
+            end
+        end)
+    end
+    
+    -- EQUIP
+    if getgenv().EQUIP then equipBestTool() end
+    
+    -- UPGRADE
+    if getgenv().UPGRADE then upgradeTool() end
+    
+    -- SELL
+    if getgenv().SELL then sellItems() end
+end
+
+-- // KEYBINDS
+game:GetService("UserInputService").InputBegan:Connect(function(i,g)
+    if g then return end
+    if i.KeyCode == Enum.KeyCode.F1 then getgenv().FARM = not getgenv().FARM print("FARM:",getgenv().FARM) end
+    if i.KeyCode == Enum.KeyCode.F2 then getgenv().LOOT = not getgenv().LOOT print("LOOT:",getgenv().LOOT) end
+    if i.KeyCode == Enum.KeyCode.F3 then getgenv().EQUIP = not getgenv().EQUIP print("EQUIP:",getgenv().EQUIP) end
+    if i.KeyCode == Enum.KeyCode.F4 then getgenv().UPGRADE = not getgenv().UPGRADE print("UPGRADE:",getgenv().UPGRADE) end
+    if i.KeyCode == Enum.KeyCode.F5 then getgenv().SELL = not getgenv().SELL print("SELL:",getgenv().SELL) end
+end)
