@@ -1,151 +1,423 @@
--- // CONFIG
-getgenv().FARM = true
-getgenv().LOOT = true
-getgenv().EQUIP = true
-getgenv().SELL = false
-getgenv().RADIUS = 50
+import requests
+import json
+import time
+import random
+import hashlib
+import hmac
+from datetime import datetime
+from urllib.parse import urlencode
 
--- // SERVICES
-local p=game.Players.LocalPlayer
-local c=p.Character or p.CharacterAdded:Wait()
-local h=c.Humanoid
-local r=c.HumanoidRootPart
-local ws=game:GetService("Workspace")
-local rs=game:GetService("ReplicatedStorage")
+# =============================================
+# SCRIPT CHẠY TRÊN SÀN DELTA - TRADE COIN TỰ ĐỘNG
+# =============================================
 
--- // BLOCK PATTERNS
-local bp={"Block","Ore","Tree","Rock","Node","Crystal","Mine","Resource","Wood","Stone","Iron","Gold","Diamond","Coal","Copper","Gem","Chest","Crate","Box","Coin","Money","Cash","Dirt","Grass","Sand","Gravel","Obsidian","Emerald","Ruby","Sapphire","Amethyst","Topaz","Mythic","Legendary","Epic","Rare","Common","Egg","Huge","Titanic","Boss","Minion","Flower","Bush","Mushroom"}
-
--- // LOOT PATTERNS
-local lp={"Coin","Money","Cash","Gold","Diamond","Gem","Crystal","Loot","Drop","Item","Sword","Pickaxe","Axe","Weapon","Tool","Gun","Armor","Helmet","Shield","Potion","Food","Backpack","Pet","Egg","Mount","Scroll","Book","Rune","Key","Fragment","Shard","Token","Ticket","Material","Resource","Common","Uncommon","Rare","Epic","Legendary","Mythic","Divine","Godly"}
-
--- // TIER
-local tier={["Godly"]=100,["Divine"]=95,["Mythic"]=90,["Exclusive"]=85,["Legendary"]=80,["Titanic"]=70,["Huge"]=65,["Epic"]=60,["Rare"]=40,["Uncommon"]=20,["Common"]=10,["Basic"]=5}
-
--- // CHECK IF OBJECT MATCHES PATTERNS
-local function match(obj,patterns)
-    local n=string.lower(obj.Name)
-    for _,v in ipairs(patterns)do
-        if n:find(string.lower(v))then return true end
-    end
-    return false
-end
-
--- // FIND NEAREST
-local function nearest(patterns,rad)
-    local best=nil
-    local bestDist=rad
-    for _,v in ipairs(ws:GetDescendants())do
-        if v:IsA("BasePart")then
-            local d=(v.Position-r.Position).Magnitude
-            if d<bestDist and match(v,patterns)then
-                best=v
-                bestDist=d
-            end
-        end
-    end
-    return best
-end
-
--- // GET ITEM TIER
-local function getTier(obj)
-    local n=string.lower(obj.Name)
-    for k,v in pairs(tier)do
-        if n:find(string.lower(k))then return v end
-    end
-    return 10
-end
-
--- // CLICK OBJECT (UNIVERSAL)
-local function click(obj)
-    pcall(function()
-        local cd=obj:FindFirstChildOfClass("ClickDetector")
-        if cd then fireclickdetector(cd)return end
-        local pp=obj:FindFirstChildOfClass("ProximityPrompt")
-        if pp then fireproximityprompt(pp)return end
-        local rem=rs:FindFirstChild("Remotes")or rs:FindFirstChild("Events")or rs
-        local ev=rem:FindFirstChild("Mine")or rem:FindFirstChild("Harvest")or rem:FindFirstChild("Collect")or rem:FindFirstChild("Farm")or rem:FindFirstChild("Hit")or rem:FindFirstChild("Damage")or rem:FindFirstChild("Click")
-        if ev and ev:IsA("RemoteEvent")then ev:FireServer(obj)return end
-        local t=c:FindFirstChildOfClass("Tool")
-        if t then t:Activate()wait(0.05)t:Deactivate()end
-    end)
-end
-
--- // COLLECT LOOT
-local function collect(obj)
-    local old=r.CFrame
-    r.CFrame=CFrame.new(obj.Position)
-    wait(0.05)
-    local rem=rs:FindFirstChild("Remotes")or rs:FindFirstChild("Events")or rs
-    local ev=rem:FindFirstChild("Collect")or rem:FindFirstChild("Pickup")or rem:FindFirstChild("Loot")or rem:FindFirstChild("Grab")or rem:FindFirstChild("Take")
-    if ev and ev:IsA("RemoteEvent")then ev:FireServer(obj)end
-    click(obj)
-    wait(0.02)
-    r.CFrame=old
-end
-
--- // EQUIP BEST TOOL
-local function equipBest()
-    local bp=LocalPlayer:FindFirstChild("Backpack")or c:FindFirstChild("Backpack")
-    if not bp then return end
-    local best=nil
-    local bestTier=0
-    for _,v in ipairs(bp:GetChildren())do
-        if v:IsA("Tool")then
-            local t=getTier(v)
-            if t>bestTier then best=v;bestTier=t end
-        end
-    end
-    if best then pcall(function()h:EquipTool(best)end)end
-end
-
--- // SELL
-local function sell()
-    local rem=rs:FindFirstChild("Remotes")or rs:FindFirstChild("Events")or rs
-    local ev=rem:FindFirstChild("Sell")or rem:FindFirstChild("SellAll")or rem:FindFirstChild("Trade")
-    if ev and ev:IsA("RemoteEvent")then ev:FireServer()return end
-    local npc=nearest({"Shop","Sell","Merchant","Vendor","Trader"},100)
-    if npc then click(npc)end
-end
-
--- // MOVE TO
-local function moveTo(pos)
-    r.CFrame=CFrame.new(pos)
-    wait(0.05)
-end
-
--- // RESPAWN HANDLER
-p.CharacterAdded:Connect(function(nc)c=nc;h=c:WaitForChild("Humanoid");r=c:WaitForChild("HumanoidRootPart")end)
-
--- // MAIN LOOP
-print("AUTO FARM READY | F1:Farm F2:Loot F3:Equip F4:Sell")
-while wait(0.05)do
-    if not getgenv().FARM then continue end
-    if h.Health<=0 then wait(1)continue end
+class DeltaExchangeBot:
+    def __init__(self, api_key, api_secret):
+        """
+        Khởi tạo bot giao dịch trên sàn Delta Exchange
+        API Key và Secret lấy từ: Delta Exchange -> Settings -> API Management
+        """
+        self.base_url = "https://api.delta.exchange"
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Content-Type": "application/json",
+            "api-key": self.api_key,
+            "User-Agent": "DeltaBot/1.0"
+        })
+        
+        # Lưu thông tin tài khoản
+        self.balance_usdt = 0.0
+        self.positions = []
+        self.current_symbol = None
+        
+    def _generate_signature(self, method, path, query_string, body=""):
+        """
+        Tạo chữ ký HMAC-SHA256 cho request API Delta Exchange
+        """
+        timestamp = str(int(time.time()))
+        message = timestamp + method + path + query_string + body
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            message.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        return timestamp, signature
     
-    local block=nearest(bp,getgenv().RADIUS)
-    if block then
-        if(block.Position-r.Position).Magnitude>10 then moveTo(block.Position)end
-        click(block)
-    end
+    def _send_request(self, method, path, params=None, data=None):
+        """
+        Gửi request có authentication đến API Delta Exchange
+        """
+        query_string = ""
+        if params:
+            query_string = "?" + urlencode(params)
+        
+        body = json.dumps(data) if data else ""
+        timestamp, signature = self._generate_signature(method, path, query_string, body)
+        
+        headers = {
+            "timestamp": timestamp,
+            "signature": signature
+        }
+        
+        url = self.base_url + path + query_string
+        
+        if method == "GET":
+            response = self.session.get(url, headers=headers)
+        elif method == "POST":
+            response = self.session.post(url, headers=headers, data=body)
+        elif method == "DELETE":
+            response = self.session.delete(url, headers=headers)
+        else:
+            return None
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"[-] Lỗi API {response.status_code}: {response.text}")
+            return None
     
-    if getgenv().LOOT then
-        for _,v in ipairs(ws:GetDescendants())do
-            if v:IsA("BasePart")and(v.Position-r.Position).Magnitude<getgenv().RADIUS and match(v,lp)then
-                collect(v)
-            end
-        end
-    end
+    def get_wallet_balance(self):
+        """
+        Bước 1: Lấy số dư ví USDT trên sàn Delta
+        """
+        path = "/v2/wallet/balances"
+        result = self._send_request("GET", path)
+        
+        if result and result.get("success"):
+            balances = result.get("result", [])
+            for balance in balances:
+                if balance.get("asset") == "USDT":
+                    self.balance_usdt = float(balance.get("available_balance", 0))
+                    total = float(balance.get("balance", 0))
+                    print(f"[+] Số dư USDT khả dụng: {self.balance_usdt}")
+                    print(f"[+] Tổng USDT: {total}")
+                    return self.balance_usdt
+        
+        print("[-] Không thể lấy số dư ví")
+        return 0.0
     
-    if getgenv().EQUIP then equipBest()end
-    if getgenv().SELL then sell()end
-end
+    def get_market_data(self, symbol="BTCUSDT"):
+        """
+        Bước 2: Lấy dữ liệu thị trường - giá hiện tại, spread
+        """
+        path = "/v2/tickers"
+        params = {"symbol": symbol}
+        result = self._send_request("GET", path, params=params)
+        
+        if result and result.get("success"):
+            ticker_data = result.get("result", {})
+            
+            mark_price = float(ticker_data.get("mark_price", 0))
+            last_price = float(ticker_data.get("last_price", 0))
+            bid_price = float(ticker_data.get("bid_price", 0))
+            ask_price = float(ticker_data.get("ask_price", 0))
+            volume_24h = float(ticker_data.get("turnover_24h", 0))
+            funding_rate = float(ticker_data.get("funding_rate", 0))
+            
+            print(f"[+] Symbol: {symbol}")
+            print(f"[+] Giá đánh dấu: {mark_price}")
+            print(f"[+] Giá cuối: {last_price}")
+            print(f"[+] Giá Bid/Ask: {bid_price}/{ask_price}")
+            print(f"[+] Volume 24h: {volume_24h}")
+            print(f"[+] Funding Rate: {funding_rate:.6f}")
+            
+            self.current_symbol = symbol
+            
+            return {
+                "symbol": symbol,
+                "mark_price": mark_price,
+                "last_price": last_price,
+                "bid_price": bid_price,
+                "ask_price": ask_price,
+                "funding_rate": funding_rate,
+                "volume": volume_24h
+            }
+        
+        print("[-] Không thể lấy dữ liệu thị trường")
+        return None
+    
+    def place_market_order(self, symbol, side, quantity):
+        """
+        Bước 3: Đặt lệnh Market - mua/bán ngay lập tức
+        side: "buy" hoặc "sell"
+        quantity: số lượng contract
+        """
+        path = "/v2/orders"
+        
+        order_data = {
+            "product_id": self._get_product_id(symbol),
+            "size": quantity,
+            "side": side,
+            "order_type": "market_order",
+            "time_in_force": "ioc"  # Immediate or Cancel
+        }
+        
+        print(f"[*] Đặt lệnh {side.upper()} {quantity} {symbol} giá thị trường...")
+        result = self._send_request("POST", path, data=order_data)
+        
+        if result and result.get("success"):
+            order = result.get("result", {})
+            order_id = order.get("id")
+            filled_qty = float(order.get("filled_size", 0))
+            avg_price = float(order.get("average_fill_price", 0))
+            
+            print(f"[+] Lệnh thành công - ID: {order_id}")
+            print(f"[+] Khớp: {filled_qty} @ {avg_price}")
+            return order
+        
+        print(f"[-] Đặt lệnh thất bại")
+        return None
+    
+    def place_limit_order(self, symbol, side, quantity, price):
+        """
+        Bước 4: Đặt lệnh Limit - chờ giá mong muốn
+        """
+        path = "/v2/orders"
+        
+        order_data = {
+            "product_id": self._get_product_id(symbol),
+            "size": quantity,
+            "side": side,
+            "order_type": "limit_order",
+            "limit_price": str(price),
+            "time_in_force": "gtc"  # Good Till Cancel
+        }
+        
+        print(f"[*] Đặt lệnh LIMIT {side.upper()} {quantity} {symbol} @ {price}")
+        result = self._send_request("POST", path, data=order_data)
+        
+        if result and result.get("success"):
+            order = result.get("result", {})
+            print(f"[+] Lệnh Limit đã đặt - ID: {order.get('id')}")
+            print(f"[+] Trạng thái: {order.get('state')}")
+            return order
+        
+        return None
+    
+    def set_stop_loss_take_profit(self, symbol, position_id, stop_loss_price=None, take_profit_price=None):
+        """
+        Bước 5: Đặt Stop Loss và Take Profit cho vị thế
+        """
+        if stop_loss_price:
+            path = "/v2/orders"
+            sl_order = {
+                "product_id": self._get_product_id(symbol),
+                "size": 0,  # Sẽ tự động lấy size của position
+                "side": "sell",  # Đóng long position
+                "order_type": "stop_order",
+                "stop_price": str(stop_loss_price),
+                "stop_trigger_method": "mark_price",
+                "reduce_only": True
+            }
+            
+            result = self._send_request("POST", path, data=sl_order)
+            if result and result.get("success"):
+                print(f"[+] Đặt Stop Loss tại {stop_loss_price}")
+        
+        if take_profit_price:
+            path = "/v2/orders"
+            tp_order = {
+                "product_id": self._get_product_id(symbol),
+                "size": 0,
+                "side": "sell",
+                "order_type": "take_profit_order",
+                "stop_price": str(take_profit_price),
+                "stop_trigger_method": "mark_price",
+                "reduce_only": True
+            }
+            
+            result = self._send_request("POST", path, data=tp_order)
+            if result and result.get("success"):
+                print(f"[+] Đặt Take Profit tại {take_profit_price}")
+    
+    def get_open_positions(self, symbol=None):
+        """
+        Bước 6: Lấy danh sách vị thế đang mở
+        """
+        path = "/v2/positions"
+        params = {}
+        if symbol:
+            params["product_symbol"] = symbol
+        
+        result = self._send_request("GET", path, params=params)
+        
+        if result and result.get("success"):
+            positions = result.get("result", [])
+            self.positions = positions
+            
+            print(f"[+] Số vị thế đang mở: {len(positions)}")
+            for pos in positions:
+                print(f"    - {pos.get('symbol')}: Size {pos.get('size')}, "
+                      f"Entry {pos.get('entry_price')}, "
+                      f"PNL {pos.get('unrealized_pnl')}")
+            
+            return positions
+        
+        return []
+    
+    def auto_scalp_strategy(self, symbol, trade_amount_usdt, target_pct=0.5, stop_loss_pct=0.3):
+        """
+        Bước 7: Chiến lược Scalping tự động
+        Vào lệnh, chốt lời nhanh với target 0.5%, cắt lỗ 0.3%
+        """
+        print(f"\n[*] Bắt đầu chiến lược SCALPING {symbol}")
+        
+        # Lấy dữ liệu thị trường
+        market = self.get_market_data(symbol)
+        if not market:
+            return False
+        
+        # Tính số lượng contract dựa trên số USDT muốn trade
+        mark_price = market["mark_price"]
+        quantity = trade_amount_usdt / mark_price
+        
+        # Làm tròn quantity theo quy định của sàn
+        quantity = round(quantity, 3)
+        
+        # Vào lệnh Market Buy
+        order = self.place_market_order(symbol, "buy", quantity)
+        if not order:
+            return False
+        
+        entry_price = float(order.get("average_fill_price", mark_price))
+        
+        # Tính giá SL và TP
+        sl_price = entry_price * (1 - stop_loss_pct / 100)
+        tp_price = entry_price * (1 + target_pct / 100)
+        
+        print(f"[*] Entry: {entry_price}, SL: {sl_price:.2f}, TP: {tp_price:.2f}")
+        
+        # Đặt SL và TP
+        self.set_stop_loss_take_profit(
+            symbol, 
+            order.get("id"), 
+            stop_loss_price=sl_price,
+            take_profit_price=tp_price
+        )
+        
+        return True
+    
+    def _get_product_id(self, symbol):
+        """
+        Lấy product ID từ symbol
+        """
+        path = "/v2/products"
+        result = self._send_request("GET", path)
+        
+        if result and result.get("success"):
+            products = result.get("result", [])
+            for product in products:
+                if product.get("symbol") == symbol:
+                    return product.get("id")
+        
+        # Fallback ID cho các cặp phổ biến
+        mapping = {
+            "BTCUSDT": 1,
+            "ETHUSDT": 2,
+            "SOLUSDT": 3
+        }
+        return mapping.get(symbol, 1)
+    
+    def run_continuous_trading(self, symbols_list, trade_amount_per_pair, cycles=0):
+        """
+        Bước 8: Chạy giao dịch liên tục qua nhiều cặp coin
+        cycles = 0 nghĩa là chạy vô hạn
+        """
+        cycle_count = 0
+        total_pnl = 0.0
+        
+        print(f"[*] Bắt đầu trade liên tục trên {len(symbols_list)} cặp")
+        print(f"[*] Vốn mỗi lệnh: {trade_amount_per_pair} USDT")
+        
+        while True:
+            cycle_count += 1
+            print(f"\n{'='*50}")
+            print(f"[*] CHU KỲ {cycle_count}")
+            print(f"{'='*50}")
+            
+            # Lấy số dư
+            self.get_wallet_balance()
+            
+            # Trade từng cặp
+            for symbol in symbols_list:
+                try:
+                    # Kiểm tra vị thế hiện tại
+                    positions = self.get_open_positions(symbol)
+                    
+                    # Nếu không có vị thế, vào lệnh mới
+                    if not positions:
+                        self.auto_scalp_strategy(
+                            symbol, 
+                            trade_amount_per_pair,
+                            target_pct=0.5,
+                            stop_loss_pct=0.3
+                        )
+                    
+                    # Delay giữa các lệnh để tránh rate limit
+                    time.sleep(1)
+                    
+                except Exception as e:
+                    print(f"[-] Lỗi trade {symbol}: {e}")
+                    continue
+            
+            # Hiển thị PNL tổng
+            all_positions = self.get_open_positions()
+            for pos in all_positions:
+                pnl = float(pos.get("unrealized_pnl", 0))
+                total_pnl += pnl
+            print(f"[*] Tổng PNL hiện tại: {total_pnl:.2f} USDT")
+            
+            # Kiểm tra điều kiện dừng
+            if cycles > 0 and cycle_count >= cycles:
+                print(f"[+] Đã hoàn thành {cycles} chu kỳ, dừng bot")
+                break
+            
+            # Chờ 60 giây trước chu kỳ tiếp theo
+            print(f"[*] Chờ 60 giây...")
+            time.sleep(60)
+            
+            # Kiểm tra nếu còn ít vốn thì dừng
+            if self.balance_usdt < trade_amount_per_pair:
+                print(f"[-] Số dư không đủ ({self.balance_usdt} < {trade_amount_per_pair}), dừng bot")
+                break
 
--- // KEYBINDS
-game:GetService("UserInputService").InputBegan:Connect(function(i,g)
-    if g then return end
-    if i.KeyCode==Enum.KeyCode.F1 then getgenv().FARM=not getgenv().FARM print("FARM:",getgenv().FARM)end
-    if i.KeyCode==Enum.KeyCode.F2 then getgenv().LOOT=not getgenv().LOOT print("LOOT:",getgenv().LOOT)end
-    if i.KeyCode==Enum.KeyCode.F3 then getgenv().EQUIP=not getgenv().EQUIP print("EQUIP:",getgenv().EQUIP)end
-    if i.KeyCode==Enum.KeyCode.F4 then getgenv().SELL=not getgenv().SELL print("SELL:",getgenv().SELL)end
-end)
+# =============================================
+# HÀM MAIN
+# =============================================
+def main():
+    # API KEY từ Delta Exchange
+    API_KEY = "YOUR_DELTA_API_KEY_HERE"
+    API_SECRET = "YOUR_DELTA_API_SECRET_HERE"
+    
+    # Khởi tạo bot
+    bot = DeltaExchangeBot(API_KEY, API_SECRET)
+    
+    # Lấy số dư ban đầu
+    bot.get_wallet_balance()
+    
+    # Danh sách cặp trade
+    trading_pairs = ["BTCUSDT", "ETHUSDT"]
+    
+    # Chạy trade liên tục, mỗi lệnh 50 USDT
+    bot.run_continuous_trading(
+        symbols_list=trading_pairs,
+        trade_amount_per_pair=50.0,
+        cycles=0  # 0 = chạy vô hạn, hoặc đặt số chu kỳ cụ thể
+    )
+
+if __name__ == "__main__":
+    main()
+
+# =============================================
+# YÊU CẦU HỆ THỐNG:
+# =============================================
+# 1. Python 3.8+ với thư viện: requests
+#    pip install requests
+# 2. Tài khoản Delta Exchange đã KYC
+# 3. Tạo API Key tại: https://www.delta.exchange/app/api
+# 4. Nạp USDT vào ví Delta Exchange
+# 5. Script hỗ trợ cả Mainnet và Testnet
+#    Testnet: https://testnet-api.delta.exchange
+# =============================================
